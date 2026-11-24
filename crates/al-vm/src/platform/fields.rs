@@ -261,10 +261,13 @@ fn table_entries(
         let row_packages = extension.as_deref().unwrap_or(&packages[..]);
         match field_row(c, o, f, t, blank, row_packages, &mut r) {
             // RelationTableNo and RelationFieldNo of a relation whose condition rests on an assumption carry its flag
-            // (corpus PR 1437, merged, not pinned yet: table-objects/extensions/ExtRelationEnumNamespace_Tests.al:353).
-            Ok(()) => out.push(match f.relation_condition_assumption() {
-                Some(a) => Entry::ok(r).assuming_in(a, vec![pos(t, 21), pos(t, 22)]),
-                None => Entry::ok(r),
+            // (corpus PR 1437, merged, not pinned yet: table-objects/extensions/ExtRelationEnumNamespace_Tests.al:353), and
+            // so do those of a relation without a field in a shape assumed (`field_relation::no_field_shape`).
+            Ok(relation) => out.push(match (f.relation_condition_assumption(), relation) {
+                (Some(a), _) => Entry::ok(r).assuming_in(a, vec![pos(t, 21), pos(t, 22)]),
+                // Only RelationFieldNo rests on it; RelationTableNo is pinned.
+                (None, Some(a)) => Entry::ok(r).assuming_in(a, vec![pos(t, 22)]),
+                (None, None) => Entry::ok(r),
             }),
             Err(why) => {
                 let mut k = blank.row();
@@ -562,7 +565,7 @@ fn field_row(
     blank: &Blank,
     packages: &[(usize, Value)],
     r: &mut al_data::Row,
-) -> Result<(), String> {
+) -> Result<Option<al_builtins::assumptions::Assumption>, String> {
     let what = || format!("field '{}' of table '{}'", f.name, table.name);
     let fprop = |name: &str| {
         f.properties

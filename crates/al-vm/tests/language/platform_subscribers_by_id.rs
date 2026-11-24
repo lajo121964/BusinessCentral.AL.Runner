@@ -417,12 +417,28 @@ fn an_own_table_subscriber_written_with_the_bare_id_runs_flagged() {
     assert!(take_hits().contains(&Assumption::SubscriberPublisherById));
 }
 
-/// The same subscriber in an app that depends on the table's app: a publisher of another app is not measured (a Microsoft
-/// table such as 483 is one), so the insert refuses.
+/// The same subscriber in an app that depends on the table's app: a static subscriber to OnAfterInsertEvent of another app's
+/// table is bound as the name form is (assumption `subscriber-by-id-other-app-publisher`, a partner probe on BC 29; its own
+/// tests: subscriber_by_id_other_app.rs), and flags the run.
 #[test]
-fn a_bare_id_subscriber_to_a_table_of_another_app_refuses_the_raise() {
+fn a_bare_id_subscriber_to_a_table_of_another_app_runs_flagged() {
+    use al_builtins::assumptions::{Assumption, take_hits};
     let (table, rest) = OWN_TABLE.split_at(OWN_TABLE.find("codeunit 50301").unwrap());
-    let m = refused(run_with_dependency(table, &format!("{rest}{INSERT}"), "C", "Go"));
+    let _ = take_hits();
+    assert_eq!(
+        text(run_with_dependency(table, &format!("{rest}{INSERT}"), "C", "Go")),
+        "ins;"
+    );
+    assert!(take_hits().contains(&Assumption::SubscriberByIdOtherAppPublisher));
+}
+
+/// Another table event of another app's table by the bare id is not measured: refused.
+#[test]
+fn a_bare_id_subscriber_to_another_event_of_a_table_of_another_app_refuses_the_raise() {
+    let src = OWN_TABLE.replace("'OnAfterInsertEvent'", "'OnBeforeDeleteEvent'");
+    let (table, rest) = src.split_at(src.find("codeunit 50301").unwrap());
+    let go = INSERT.replace("R.Insert();", "R.Insert(); R.Delete(true);");
+    let m = refused(run_with_dependency(table, &format!("{rest}{go}"), "C", "Go"));
     assert!(m.contains("by the id 50300"), "{m}");
 }
 

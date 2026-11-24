@@ -178,6 +178,9 @@ impl Session {
                 None | Some(Cell::MainEveryShape) => {}
                 // Main's answer, measured by the open probe alone.
                 Some(Cell::Main) if measured() => assume(Assumption::SetRangeOtherTypeConvert),
+                Some(Cell::Main) if self.text_into_guid_other_shape(rec, f, at) => {
+                    assume(Assumption::SetrangeTextIntoGuidSystemidOrTemporary)
+                }
                 Some(Cell::MainPinned) if measured() => {}
                 Some(Cell::Convert(converted)) if measured() => {
                     assume(Assumption::SetRangeOtherTypeConvert);
@@ -195,6 +198,24 @@ impl Session {
         Ok(())
     }
 
+    /// `FieldRef.SetRange(X)` of one typed non-empty Text or Code into a Guid field (the cell `guid_cell` gives main's answer for)
+    /// in the two shapes beyond the measured one that assumption setrange-text-into-guid-systemid-or-temporary covers, measured by
+    /// a partner probe on BC 29.0.54011.55616 as the earlier conversion answers them: the SystemId field of a record that is not
+    /// temporary (a Text holding the Guid with or without braces filters on it; 'ABC' raises InvalidGuidFormat), and a stored Guid
+    /// field of a temporary record (a Text holding the Guid filters on it). Both in an en-US session and filter group 0.
+    fn text_into_guid_other_shape(&self, rec: &Rc<RefCell<RecordState>>, f: &al_data::FieldDef, at: CellAt) -> bool {
+        let r = rec.borrow();
+        let shape = if r.temporary {
+            f.stored && f.id < 2_000_000_000
+        } else {
+            f.id == 2_000_000_000
+        };
+        f.ty == RtType::Guid
+            && shape
+            && r.filter_group == 0
+            && (at.call, at.written, at.values) == (Call::FieldRefSetRange, Some(Written::Typed), 1)
+            && self.global_language() == 1033
+    }
     /// The measured cell of the value `v` into a field of type `ty`, given to the call `at`; `None` for a pair of types the probe
     /// does not measure (a value of the field's own type among them): main's conversion stays.
     fn setrange_cell(&self, v: &Value, ty: &RtType, at: CellAt) -> Option<Cell> {

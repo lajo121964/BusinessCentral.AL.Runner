@@ -16,7 +16,7 @@
 //! under test to MakeDateFilter, CaptionClassTranslate or SubstituteReport, registered as the name
 //! form is (`by_id_as_name`, assumption `subscriber-publisher-by-id`); A subscriber that writes any
 //! other publisher as a bare id is bound only in the shapes `by_id_measured` allows (assumption
-//! `subscriber-publisher-by-id`, marked by `note_scope`, and for install subscribers through the
+//! `subscriber-publisher-by-id`, or `subscriber-by-id-other-app-publisher` for a publisher of another app, marked by `note_scope`, and for install subscribers through the
 //! tables al-testrun `install::assume_by_id_install_tables` lists from `is_by_id_install`); every
 //! other bare-id shape refuses its event (`MissingWhy::PublisherByIdNotMeasured`), except a
 //! dependency app's bare-id subscriber to Global Triggers, Caption Class, Company Triggers or
@@ -27,6 +27,7 @@
 //! stands in for (`filterevents.rs`, `pages/ui_caption_translate.rs` and `pages/caption_class.rs`
 //! refuse on it). Entry points: `Registry`, `build`, `subscribers_at`, `Subscriber`, `Publisher`.
 
+use al_builtins::assumptions::Assumption;
 use al_ir as ir;
 use al_ir::ObjKind;
 use std::collections::HashMap;
@@ -89,8 +90,8 @@ pub struct Registry {
     /// told apart from another object of the same name). Raising such an event is refused.
     pub missing: HashMap<(usize, String), Vec<Missing>>,
     /// (publisher object, lower-case event name) of the events a subscriber written with a bare publisher id is bound to
-    /// ([`by_id_measured`]): asking for their subscribers marks the assumption `subscriber-publisher-by-id`.
-    by_id_assumed: std::collections::HashSet<(usize, String)>,
+    /// ([`by_id_measured`]), with the assumption that covers each: asking for their subscribers marks it.
+    by_id_assumed: HashMap<(usize, String), Assumption>,
     /// (object, routine) of the `install_subscribers` written with a bare publisher id ([`Registry::is_by_id_install`]).
     by_id_install: std::collections::HashSet<(usize, usize)>,
     /// (subscriber, bare id) of each dependency app's subscriber to a platform codeunit event of [`platform_by_id_events`] written
@@ -547,12 +548,12 @@ fn bare_id(written: &str) -> Option<&str> {
     (!w.is_empty() && w.bytes().all(|b| b.is_ascii_digit())).then_some(w)
 }
 
-/// Whether a subscriber of object `o` whose publisher is written as the bare id `id` (kind `kind`, bound to `found`) is in a shape
-/// the assumption `subscriber-publisher-by-id` covers: BC binds it as it binds the name form (corpus PR 1466,
-/// tests/al-language/events/subscriber-by-id/SbiSubscriberByIdTests.al, local runs on every verified BC major). The measured
-/// shapes, each fact by equality; every other one refuses (`MissingWhy::PublisherByIdNotMeasured`):
-/// for a subscriber of the app under test only (the probe's subscribers are all in its one app, the app under test; a
-/// dependency app's subscriber is not measured):
+/// The assumption that covers a subscriber of object `o` whose publisher is written as the bare id `id` (kind `kind`, bound to
+/// `found`): BC binds it as it binds the name form. `None`: not measured, it refuses (`MissingWhy::PublisherByIdNotMeasured`).
+///
+/// `subscriber-publisher-by-id` (corpus PR 1466, tests/al-language/events/subscriber-by-id/SbiSubscriberByIdTests.al, local runs
+/// on every verified BC major), each fact by equality, for a subscriber of the app under test only (the probe's subscribers are
+/// all in its one app, the app under test):
 /// - the platform codeunits of [`platform_by_id_events`];
 /// - a publisher object of the subscriber's own app, being a
 ///   codeunit's own IntegrationEvent or BusinessEvent (:23, :36, :47, :65), a report's own IntegrationEvent (:133), a
@@ -560,7 +561,57 @@ fn bare_id(written: &str) -> Option<&str> {
 ///   (:78), a page's OnOpenPageEvent and OnAfterValidateEvent (:109);
 /// - the System Application's codeunit 45 "Auto Format" (`al_ir::is_system_application_codeunit`) OnResolveAutoFormat and
 ///   OnAfterResolveAutoFormat (:201).
+///
+/// `subscriber-by-id-other-app-publisher` ([`other_app_publisher`]): a static subscriber of any app, a dependency app's
+/// included, to OnAfterInsertEvent of a table of another app or to an IntegrationEvent of a codeunit of another app.
 fn by_id_measured(
+    (heads, apps): (&[ir::ObjectHead], &[ir::AppInfo]),
+    o: &ir::ObjectHead,
+    kind: ObjKind,
+    id: &str,
+    event: &str,
+    found: Option<usize>,
+) -> Option<Assumption> {
+    if by_id_in_app_under_test((heads, apps), o, kind, id, event, found) {
+        return Some(Assumption::SubscriberPublisherById);
+    }
+    // The codeunits the runtime raises or stands in for by their id keep their own rules: Auto Format 45 and the platform
+    // codeunits (`platform_by_id_events`, `RAISED_PLATFORM`).
+    let special = kind == ObjKind::Codeunit
+        && (id == "45"
+            || !platform_by_id_events(kind, id).is_empty()
+            || RAISED_PLATFORM.into_iter().any(|p| p.codeunit.0.to_string() == id));
+    (!special && other_app_publisher(o, kind, event, found.and_then(|t| heads.get(t))))
+        .then_some(Assumption::SubscriberByIdOtherAppPublisher)
+}
+
+/// The shapes of assumption `subscriber-by-id-other-app-publisher`, measured by a partner probe on BC 29.0.54011.55616: a static
+/// subscriber of any app (a dependency app's included) written with the bare id of a publisher of another app receives
+/// - a table's OnAfterInsertEvent: `[EventSubscriber(ObjectType::Table, 18, 'OnAfterInsertEvent', '', false, false)]` in a
+///   dependency app received Customer's (Base Application) for `Insert()` and `Insert(false)`, as often as its twin that names
+///   `Database::Customer`, with RunTrigger No (Continia Core Internal Activation App's `CSC Library - CO Credentials`
+///   subscribes so to Continia Core's table 6192810);
+/// - a codeunit's own IntegrationEvent: a dependency app's `ObjectType::Codeunit, <id>` subscriber received each raise of a
+///   local IntegrationEvent of a codeunit of a third app, once, before its twin that names the codeunit (by method name), with
+///   the argument (Continia Delivery Network subscribes so to Base Application's codeunit 415 OnAfterReleasePurchaseDoc).
+/// Other events (another table event, a BusinessEvent, an event an extension declares), a manual subscriber and a publisher
+/// of the subscriber's own app (`by_id_in_app_under_test`) are not covered by it.
+fn other_app_publisher(o: &ir::ObjectHead, kind: ObjKind, event: &str, publisher: Option<&ir::ObjectHead>) -> bool {
+    let Some(p) = publisher.filter(|p| p.kind == kind && p.app != o.app && !is_manual(o)) else {
+        return false;
+    };
+    match kind {
+        ObjKind::Table => event == "onafterinsertevent",
+        ObjKind::Codeunit => (p.events.iter()).any(|e| {
+            e.name.eq_ignore_ascii_case(event)
+                && (e.attributes.iter()).any(|a| a.name.eq_ignore_ascii_case("IntegrationEvent"))
+        }),
+        _ => false,
+    }
+}
+
+/// The shapes of assumption `subscriber-publisher-by-id` ([`by_id_measured`]).
+fn by_id_in_app_under_test(
     (heads, apps): (&[ir::ObjectHead], &[ir::AppInfo]),
     o: &ir::ObjectHead,
     kind: ObjKind,
@@ -704,8 +755,8 @@ impl Registry {
                             let Some(found) = reg.publisher_of(heads, (oi, kind), r, a, &event, args.get(3)) else {
                                 continue;
                             };
-                            let measured = by_id
-                                .is_some_and(|id| by_id_measured((heads, &program.apps), o, kind, id, &event, found));
+                            let measured =
+                                by_id.and_then(|id| by_id_measured((heads, &program.apps), o, kind, id, &event, found));
                             if reg.list_dependency_platform_by_id(&program.apps, (o, &r.name), (kind, by_id), &event) {
                                 continue;
                             }
@@ -813,8 +864,8 @@ impl Registry {
                             }
                             if let Some(id) = by_id {
                                 let global = kind == ObjKind::Codeunit && is_global_triggers(&target);
-                                if measured {
-                                    reg.note_by_id((oi, ri), id, found, &event);
+                                if let Some(covered) = measured {
+                                    reg.note_by_id((oi, ri), id, found, &event, covered);
                                 } else if let Some(key) = found.or(global.then_some(reg.global_key)) {
                                     // Bound to no publisher: raising the event it names refuses.
                                     reg.has_global_triggers |= global;
@@ -1029,11 +1080,14 @@ impl Registry {
         self.subscribers.get(&(object, event.to_string()))
     }
 
-    /// Marks the assumption `subscriber-publisher-by-id` when one of the subscribers of `event` of `object` is written with a bare
-    /// publisher id (`by_id_assumed`).
+    /// Marks the assumption that covers a subscriber of `event` of `object` written with a bare publisher id (`by_id_assumed`):
+    /// `subscriber-publisher-by-id`, or `subscriber-by-id-other-app-publisher`.
     fn note_by_id_event(&self, object: usize, event: &str) {
-        if !self.by_id_assumed.is_empty() && self.by_id_assumed.contains(&(object, event.to_string())) {
-            al_builtins::assumptions::assume(al_builtins::assumptions::Assumption::SubscriberPublisherById);
+        if self.by_id_assumed.is_empty() {
+            return;
+        }
+        if let Some(a) = self.by_id_assumed.get(&(object, event.to_string())) {
+            al_builtins::assumptions::assume(*a);
         }
     }
 
@@ -1054,9 +1108,17 @@ impl Registry {
         });
     }
 
-    /// Subscriber `(object, routine)`, written with the bare publisher id `id` in a shape [`by_id_measured`] covers and bound to
-    /// `found`: every key it receives `event` under marks the assumption (`note_by_id_event`, [`Registry::is_by_id_install`]).
-    fn note_by_id(&mut self, (object, routine): (usize, usize), id: &str, found: Option<usize>, event: &str) {
+    /// Subscriber `(object, routine)`, written with the bare publisher id `id` in a shape [`by_id_measured`] covers (by assumption
+    /// `covered`) and bound to `found`: every key it receives `event` under marks the assumption (`note_by_id_event`,
+    /// [`Registry::is_by_id_install`]).
+    fn note_by_id(
+        &mut self,
+        (object, routine): (usize, usize),
+        id: &str,
+        found: Option<usize>,
+        event: &str,
+        covered: Assumption,
+    ) {
         let platform = match id {
             "2000000002" => Some(self.global_key),
             "42" => Some(CAPTION_CLASS),
@@ -1071,7 +1133,7 @@ impl Registry {
                 .map(|p| p.key),
         };
         for key in found.into_iter().chain(platform) {
-            self.by_id_assumed.insert((key, event.to_string()));
+            self.by_id_assumed.insert((key, event.to_string()), covered);
         }
     }
 

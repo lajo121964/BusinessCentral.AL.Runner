@@ -289,6 +289,18 @@ pub(super) fn assert_clean_pass(o: &[(String, Outcome, Vec<Assumption>)], names:
     }
 }
 
+/// A pass that rests on assumption relation-field-no-without-field-more-shapes.
+pub(super) fn assert_flagged(o: &[(String, Outcome, Vec<Assumption>)], names: &[&str]) {
+    for n in names {
+        let (_, r, hits) = outcome(o, n);
+        assert_eq!(*r, Outcome::Pass, "{n}: {r:?}");
+        assert!(
+            hits.contains(&Assumption::RelationFieldNoWithoutFieldMoreShapes),
+            "{n}: {hits:?}"
+        );
+    }
+}
+
 pub(super) fn assert_refused(o: &[(String, Outcome, Vec<Assumption>)], names: &[&str]) {
     for n in names {
         let r = &outcome(o, n).1;
@@ -326,10 +338,11 @@ fn issue_8249_relation_without_field_reads_field_no_zero() {
             "RelationOntoOwnTable",
             "GuidToUserWithWhere",
             "IntegerKeyWithWhere",
-            "TemporarySource",
-            "FieldIsPrimaryKey",
         ],
     );
+    // The source's whole key onto a table of its app, and a Temporary source: 0, under assumption
+    // relation-field-no-without-field-more-shapes.
+    assert_flagged(&o, &["FieldIsPrimaryKey", "TemporarySource"]);
     assert_clean_pass(
         &o,
         &[
@@ -356,9 +369,10 @@ fn issue_8249_relation_without_field_reads_field_no_zero() {
     );
 }
 
-/// A relation onto a table of another app, and a field a table extension of another app declares: not measured, refused.
+/// A field a table extension of another app declares: not measured, refused. A relation onto a table of another app reads 0 under
+/// assumption relation-field-no-without-field-more-shapes.
 #[test]
-fn issue_8249_other_app_target_and_extension_are_refused() {
+fn issue_8249_other_app_extension_is_refused_and_other_app_target_is_assumed() {
     let test = r#"
 tableextension 50130 "Other Ext" extends "Item Like"
 {
@@ -407,8 +421,9 @@ codeunit 50120 T
         (OTHER_ID, AppKind::Workspace, TABLES),
         (APP_ID, AppKind::Workspace, test),
     ]);
-    assert_refused(&o, &["OtherAppExtension", "OtherAppTarget"]);
-    assert_clean_pass(&o, &["OtherAppTargetTableNo"]);
+    assert_refused(&o, &["OtherAppExtension"]);
+    // A read of the row marks the assumption its RelationFieldNo rests on, whichever column the test reads.
+    assert_flagged(&o, &["OtherAppTarget", "OtherAppTargetTableNo"]);
 }
 
 /// A target named after its namespace reads as the same relation named alone (FieldRelationFieldNo.al:88, :161-180).
